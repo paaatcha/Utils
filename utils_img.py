@@ -9,12 +9,15 @@ If you find some bug, please email-me
 '''
 from __future__ import print_function
 from __future__ import division
-from random import shuffle
+from random import shuffle, seed
 import glob
 import os
 import tensorflow as tf
 import numpy as np
 from utils import one_hot_encoding
+import sys
+sys.path.append('utils_augmentation/')
+from img_augmentation import transform_img
 
 
 '''     
@@ -59,7 +62,7 @@ def get_path_from_folders (path, scalar_feat_ext=None, img_ext='jpg', shuf=True)
         
     if (scalar_feat_ext is not None):
         for p in paths:
-            scalar_feat.append( np.loadtxt(p.split('.')[0]+'_feat.'+scalar_feat_ext) )
+            scalar_feat.append( np.loadtxt(p.split('.')[0]+'_feat.'+scalar_feat_ext, dtype=np.float32) )
             #scalar_feat_paths.append(p.split('.')[0]+'_feat.'+scalar_feat)
     
     return paths, np.asarray(scalar_feat), fold_names 
@@ -85,7 +88,7 @@ def get_path_and_labels_from_folders (path, scalar_feat_ext=None, n_samples=None
     labels = list()
     
     # Getting all paths
-    paths, scalar_feat_paths, folds = get_path_from_folders (path, scalar_feat_ext, img_ext, shuf)    
+    paths, scalar_feat, folds = get_path_from_folders (path, scalar_feat_ext, img_ext, shuf)    
     dict_labels = dict()
     
     
@@ -104,9 +107,102 @@ def get_path_and_labels_from_folders (path, scalar_feat_ext=None, n_samples=None
         
     if (one_hot):                
         labels = one_hot_encoding(labels)
+    else:
+        labels = np.asarray(labels)
         
-    return paths, labels, scalar_feat_paths, dict_labels  
+    return paths, labels, scalar_feat, dict_labels  
 
+
+'''
+    It gets a python dictionary and returns the list of train, val and test sets
+    
+    Input:
+        data_dict: a dictionary cotaining the image path as key and the label and scalar feature as values
+        sets_perc: the set percentage for [train, val, test]. It must sum up 1.0
+        shuf: wether shuffle the dataset
+        seed_number: the seed to shuffle
+        one_hot: whether using one hot encoding
+        
+    Output:
+        img: the tensor with the loaded image
+        label: the image label
+'''
+def get_path_and_labels_from_dict (data_dict, sets_perc=None, shuf=True, seed_number=None, one_hot=True):
+       
+    img_path_list = data_dict.items()
+    dict_labels = dict()
+    
+    # Generating the labels to get the labels in numbers
+    value = 0
+    for lab in [item[1][1] for item in img_path_list]:
+        if (lab not in dict_labels):
+            dict_labels[lab] = value
+            value += 1
+    
+    print (dict_labels)
+    
+    # Getting the sets partition (train, val and test)
+    if (sets_perc is None):
+        val_perc = 0.1
+        test_perc = 0.1
+        train_perc = 0.8
+    else:
+        s = sum(sets_perc)
+        if (abs(1.0-s) >= 0.01):
+            print ("The sets percentage must sum up 1. The sum was {}".format(s))
+            raise ValueError
+        else:
+            train_perc = sets_perc[0]
+            val_perc = sets_perc[1]
+            test_perc = sets_perc[2]
+    
+            
+    if (shuf):
+        # This is used to keep the same partitions for each train, val and test sets
+        if (seed_number is not None):
+            seed(seed_number)
+        shuffle(img_path_list)    
+        
+    n_samples = len(img_path_list)    
+    
+    if (val_perc == 0.0): # In this case, there's no val set
+        n_train = int(round(n_samples * train_perc))
+        n_test = n_samples - n_train
+        n_val = 0
+        
+        train_img_path_list = img_path_list[0:n_train]
+        test_img_path_list = img_path_list[n_train:n_samples]
+        val_img_path_list = None        
+        
+    else:
+        n_train = int(round(n_samples * train_perc))
+        n_test = int(round(n_samples * test_perc))
+        n_val = n_samples - n_train - n_test
+        
+        train_img_path_list = img_path_list[0:n_train]
+        test_img_path_list = img_path_list[n_train:n_train+n_test]
+        val_img_path_list = img_path_list[n_train+n_test:n_samples]
+        
+    
+    
+    print ("\n# of train samples: {}".format(n_train))
+    print ("# of val samples: {}".format(n_val))
+    print ("# of test samples: {}\n".format(n_test))
+    
+    if (one_hot):
+        train_list = [[item[0] for item in train_img_path_list], [item[1][0] for item in train_img_path_list], one_hot_encoding([dict_labels[item[1][1]] for item in train_img_path_list])]       
+        if (val_img_path_list is not None):
+            val_list = [[item[0] for item in val_img_path_list], [item[1][0] for item in val_img_path_list], one_hot_encoding([dict_labels[item[1][1]] for item in val_img_path_list])]       
+            
+        test_list = [[item[0] for item in test_img_path_list], [item[1][0] for item in test_img_path_list], one_hot_encoding([dict_labels[item[1][1]] for item in test_img_path_list])]       
+    else:
+        train_list = [[item[0] for item in train_img_path_list], [item[1][0] for item in train_img_path_list], [dict_labels[item[1][1]] for item in train_img_path_list]]       
+        if (val_img_path_list is not None):
+            val_list = [[item[0] for item in val_img_path_list], [item[1][0] for item in val_img_path_list], [dict_labels[item[1][1]] for item in val_img_path_list]]       
+            
+        test_list = [[item[0] for item in test_img_path_list], [item[1][0] for item in test_img_path_list], [dict_labels[item[1][1]] for item in test_img_path_list]]       
+    
+    return train_list, val_list, test_list
 
 '''
     It gets an image path and returns a tensor with the image loaded and its related label
@@ -124,12 +220,14 @@ def get_path_and_labels_from_folders (path, scalar_feat_ext=None, n_samples=None
         img: the tensor with the loaded image
         label: the image label
 '''
-
-def load_img_as_tensor (path, label, size=(128,128), channels=3, scalar_feat=None):
+def load_img_as_tensor (path, label, size=(128,128), channels=3, scalar_feat=None, root_folder=None):
     img = tf.read_file(path)
 
-    # Don't use tf.image.decode_image, or the output shape will be undefined
-    img_decoded = tf.image.decode_jpeg(img, channels=channels)
+    if (root_folder is None):
+        # Don't use tf.image.decode_image, or the output shape will be undefined
+        img_decoded = tf.image.decode_jpeg(img, channels=channels)
+    else:
+        img_decoded = tf.image.decode_jpeg(root_folder + '/' + img, channels=channels)
         
     # This will convert to float values in [0, 1]
     img = tf.image.convert_image_dtype(img_decoded, tf.float32)
@@ -150,31 +248,62 @@ def load_img_as_tensor (path, label, size=(128,128), channels=3, scalar_feat=Non
     Input:
         image: the tensor with the loaded image
         label: the image label
-        flip: set True to perform a flip augmentation
-        bright: set True to perform a bright augmentation
-        sat: set True to perform a saturation augmentation
         scalar_feat: if you're also loading scalar features with the images, you
         should use this parameter
-
+        params: a dictionary representing the augmentation params. If None, it set it as defaults.
+            flip_left_right = True 
+            flip_up_down = True
+            crop = 0.75
+            rot90 = True
+            brightness = 0.05
+            blur = True
+            contrast = (0.7,0.9)
+            hue = 0.06
+            gamma = 0.8
+            saturation = (0.6,0.9)
+            noise = (0.0,0.05)
+            size = (256,256,3)
+            seed_number = None
 '''
-def get_aug_tf(image, label, flip=False, bright=False, sat=False, scalar_feat=None):
-    if (flip):
-        image = tf.image.random_flip_left_right(image)
-        
-    if (bright):
-        image = tf.image.random_brightness(image, max_delta=32.0 / 255.0)
-        
-    if (sat):
-        image = tf.image.random_saturation(image, lower=0.5, upper=1.5)
-
-    # Make sure the image is still in [0, 1]
-    image = tf.clip_by_value(image, 0.0, 1.0)
+def get_aug_tf(image, label, scalar_feat=None, params=None):
+    
+    if (params == None):
+        flip_left_right = True 
+        flip_up_down = True
+        crop = 0.75
+        rot90 = True
+        brightness = 0.05
+        blur = True
+        contrast = (0.7,0.9)
+        hue = 0.06
+        gamma = 0.8
+        saturation = (0.6,0.9)
+        noise = (0.0,0.05)
+        size = (256,256,3)
+        seed_number = None
+    else:
+        flip_left_right = params['flip_left_right']
+        flip_up_down = params['flip_up_down']
+        crop = params['crop']
+        rot90 = params['rot90']
+        brightness = params['brightness']
+        blur = params['blur']
+        contrast = params['contrast']
+        hue = params['hue']
+        gamma = params['gamma']
+        saturation = params['saturation']
+        noise = params['noise']
+        size = params['size']
+        seed_number = params['seed_number']
+    
+    image = transform_img (image, flip_left_right, flip_up_down, crop,
+                           rot90, brightness, blur, contrast, hue, gamma,
+                           saturation, noise, size, seed_number)
     
     if (scalar_feat is not None):
         return image, scalar_feat, label
     else:
         return image, label
-
 
 '''
     It gets as parameter a list of paths and labels and returns the dataset according to tf.data.Dataset.
@@ -186,32 +315,31 @@ def get_aug_tf(image, label, flip=False, bright=False, sat=False, scalar_feat=No
         params: it's a python dictionary with the following keys:
             'img_size': a tuple containing width x height
             'channels': an integer representing the image's depth
-            'augmentation': set True if you wanna perform the get_aug_tf. If it's False, you don't need to set
-                            the parameters below.
-                'flip': set True to perform a flip augmentation
-                'bright': set True to perform a bright augmentation
-                'sat': set it True to perform a saturation augmentation
             'shuffle': set it True if you wanna shuffle the dataset
             'repeat': set it True if you wanna repeat the dataset
             'threads': integer represeting the number of threads to processing the images' load
             'batch_size': an integer representing the batch size
         scalar_feat: if you're also loading scalar features with the images, you
         should use this parameter
-            
+        root_folder: 
+        params_aug: if you don't wanna have an augmentation, set it as False. Otherwise, if let it None
+        this will carry out the augmentation using the default parameters. If you'd like to set your own 
+        augmentation parameters, you need to set the dictionary parameters as explained in get_aug_tf above.
+    
     Output:
         inputs: a python dictionary containing get_next iterators for the image and labels, and the 
                 make_initializable_iterator
         
         dataset: the tf.data.Dataset configured for the given data
 '''
-def get_dataset_tf(paths, labels, is_train, params, scalar_feat=None, verbose=True):
+def get_dataset_tf(paths, labels, is_train, params, scalar_feat=None, root_folder=None, params_aug=None, verbose=True):
         
-    if (scalar_feat is not None):
-        get_aug = lambda x, s, y: get_aug_tf (x, y, params['flip'], params['bright'], params['sat'], s)    
-        get_img = lambda x, s, y: load_img_as_tensor (x, y, params['img_size'], params['channels'], s)
+    if (scalar_feat is not None):     
+        get_aug = lambda x, s, y: get_aug_tf (x, y, s, params_aug)    
+        get_img = lambda x, s, y: load_img_as_tensor (x, y, params['img_size'], params['channels'], s, root_folder)
     else:
-        get_aug = lambda x, y: get_aug_tf (x, y, params['flip'], params['bright'], params['sat'])    
-        get_img = lambda x, y: load_img_as_tensor (x, y, params['img_size'], params['channels'])
+        get_aug = lambda x, y: get_aug_tf (x, y, None, params_aug)    
+        get_img = lambda x, y: load_img_as_tensor (x, y, params['img_size'], params['channels'], root_folder)
     
     if (verbose):   
         if (scalar_feat is not None):
@@ -228,8 +356,7 @@ def get_dataset_tf(paths, labels, is_train, params, scalar_feat=None, verbose=Tr
         dataset = dataset.shuffle(len(paths))
         dataset = dataset.map(get_img, num_parallel_calls=params['threads'])
         
-        
-        if (params['augmentation']):
+        if (params_aug != False):
             dataset = dataset.map(get_aug, num_parallel_calls=params['threads'])
         
         if (params['repeat']):
@@ -261,7 +388,9 @@ def get_dataset_tf(paths, labels, is_train, params, scalar_feat=None, verbose=Tr
         inputs = {'images': images, 'scalar_feat': scalar_feat, 'labels': labels, 'iterator_init_op': iterator_init_op}
     else:
         images, labels = iterator.get_next()
-        inputs = {'images': images, 'labels': labels, 'iterator_init_op': iterator_init_op}
+        inputs = {'images': images, 'scalar_feat': None, 'labels': labels, 'iterator_init_op': iterator_init_op}
+    
+
     
     return inputs, dataset
 
@@ -339,7 +468,7 @@ def create_dirs (path, folders=['A', 'B'], train_test_val=False):
     
 
 '''
-def split_folders_train_test_val (path_in, path_out, scalar_feat_ext=None, img_ext="jpg", tr=0.8, te=0.1, tv=0.1, shuf=False, verbose=False):
+def split_folders_train_test_val (path_in, path_out, scalar_feat_ext=None, img_ext="jpg", tr=0.8, te=0.1, tv=0.1, shuf=True, verbose=False):
         
     if (tr+te+tv != 1.0):
         print ('tr, te and tv must sum up 1.0')
